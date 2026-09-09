@@ -29,24 +29,39 @@ final class MindCanvas:NSView {
     var placements=[NodePlacement](),nodeMap=[String:MindNode]()
     var parents=Set<String>()
     var selected="",focus:String?,search="",connectFrom:String?
+    var selectedIDs=Set<String>()
+    var marquee:CGRect?
+    var spaceHeld=false,spaceUsed=false
     var zoom:CGFloat=1,offset=CGPoint(x:80,y:100)
     var editor:CanvasEditor?,editingID:String?
     let images=ImageCache()
-    struct Drag {var id:String?;var start:CGPoint;var offset:CGPoint;var original:[NodePlacement];var ids:Set<String>;var manual:Bool;var moved=false;var target:String?}
+    enum DragMode {case nodes,marquee,pan}
+    struct Drag {var id:String?;var start:CGPoint;var offset:CGPoint;var original:[NodePlacement];var ids:Set<String>;var manual:Bool;var moved=false;var target:String?;var mode:DragMode = .nodes;var selection=Set<String>();var baseSelection=Set<String>()}
     var drag:Drag?
     override var isFlipped:Bool{true}
     override var acceptsFirstResponder:Bool{true}
     override func acceptsFirstMouse(for event:NSEvent?) -> Bool{true}
     override init(frame:NSRect){super.init(frame:frame);registerForDraggedTypes([.fileURL]);setAccessibilityRole(.group);setAccessibilityLabel("思维导图画布")}
     required init?(coder:NSCoder){fatalError()}
-    func reload(_ d:MindDocument,selection:String,focus:String?){document=d;selected=selection;self.focus=focus;nodeMap=Dictionary(uniqueKeysWithValues:d.nodes.map{($0.id,$0)});parents=Set(d.nodes.compactMap(\.parent));placements=MindLayout.calculate(d,focus:focus);needsDisplay=true;refreshAX()}
+    func reload(_ d:MindDocument,selection:String,focus:String?){
+        let reset=document.id != d.id || selected != selection || self.focus != focus
+        document=d;selected=selection;self.focus=focus;nodeMap=Dictionary(uniqueKeysWithValues:d.nodes.map{($0.id,$0)});parents=Set(d.nodes.compactMap(\.parent));placements=MindLayout.calculate(d,focus:focus)
+        selectedIDs=reset ? [selection]:selectedIDs.intersection(placements.map(\.id));needsDisplay=true;refreshAX()
+    }
     override func setFrameSize(_ newSize:NSSize){let old=frame.size;super.setFrameSize(newSize);if old.width>0{offset.x+=(newSize.width-old.width)/2;offset.y+=(newSize.height-old.height)/2};needsDisplay=true;refreshAX()}
     func mapPoint(_ p:CGPoint) -> CGPoint{CGPoint(x:(p.x-offset.x)/zoom,y:(p.y-offset.y)/zoom)}
     func contentBounds() -> CGRect {placements.reduce(CGRect.null){$0.union($1.rect)}.insetBy(dx:-60,dy:-100)}
     func fit(){guard !placements.isEmpty else{return};let b=contentBounds();zoom=max(0.08,min(1.2,(bounds.width-70)/b.width,(bounds.height-50)/b.height));offset=CGPoint(x:(bounds.width-b.width*zoom)/2-b.minX*zoom,y:(bounds.height-b.height*zoom)/2-b.minY*zoom-12);needsDisplay=true;refreshAX();controller?.updateFooter()}
     func scale(_ factor:CGFloat,at point:CGPoint?=nil){let p=point ?? CGPoint(x:bounds.midX,y:bounds.midY),old=zoom;zoom=max(0.08,min(3,zoom*factor));offset=CGPoint(x:p.x-(p.x-offset.x)*zoom/old,y:p.y-(p.y-offset.y)*zoom/old);needsDisplay=true;refreshAX();controller?.updateFooter()}
     func hit(_ point:CGPoint)->NodePlacement?{placements.reversed().first{$0.rect.insetBy(dx:-6,dy:-6).contains(point)}}
-    func select(_ id:String){selected=id;needsDisplay=true;controller?.select(id);refreshAX()}
+    func select(_ id:String){setSelection([id],primary:id)}
+    func setSelection(_ ids:Set<String>,primary:String?=nil){
+        let ids=ids.intersection(placements.map(\.id))
+        let next=primary.flatMap{ids.contains($0) ? $0:nil} ?? (ids.contains(selected) ? selected:placements.first{ids.contains($0.id)}?.id)
+        if let next {selected=next;controller?.select(next)}
+        selectedIDs=ids;needsDisplay=true;refreshAX();controller?.updateFooter();if controller?.showInspector==true{controller?.buildInspector()}
+    }
+    static func selectionRect(from a:CGPoint,to b:CGPoint)->CGRect{CGRect(x:min(a.x,b.x),y:min(a.y,b.y),width:abs(a.x-b.x),height:abs(a.y-b.y))}
     func portY(_ p:NodePlacement)->CGFloat{p.depth>0 && ["","line"].contains(nodeMap[p.id]?.text("shape") ?? "") ? p.rect.maxY:p.rect.midY}
     func branchPath(_ a:NodePlacement,_ b:NodePlacement)->NSBezierPath{
         let vertical=document.layout=="vertical",path=NSBezierPath()
@@ -66,6 +81,7 @@ final class MindCanvas:NSView {
     override func draw(_ dirtyRect:NSRect){
         (document.theme=="light" ? NSColor.white:NSColor(hex:"#111112")).setFill();bounds.fill()
         NSGraphicsContext.saveGraphicsState();let t=NSAffineTransform();t.translateX(by:offset.x,yBy:offset.y);t.scale(by:zoom);t.concat();drawScene(decorations:true);NSGraphicsContext.restoreGraphicsState()
+        if let marquee {let path=NSBezierPath(rect:marquee);NSColor.controlAccentColor.withAlphaComponent(0.12).setFill();path.fill();NSColor.controlAccentColor.withAlphaComponent(0.85).setStroke();path.lineWidth=1;path.stroke()}
     }
     func drawScene(decorations:Bool){
         let by=Dictionary(uniqueKeysWithValues:placements.map{($0.id,$0)}),light=document.theme=="light"
@@ -96,8 +112,8 @@ final class MindCanvas:NSView {
             let info=[n.text("notes").isEmpty ? "":"≡",n.text("tags").isEmpty ? "":"# "+n.text("tags"),n.text("link").isEmpty ? "":"↗"].filter{!$0.isEmpty}.joined(separator:"  ")
             (info as NSString).draw(at:CGPoint(x:rect.minX+3,y:rect.minY-18),withAttributes:[.font:NSFont.systemFont(ofSize:10),.foregroundColor:NSColor.secondaryLabelColor])
             if decorations {
-                if selected==p.id || drag?.target==p.id {color.setStroke();let selection=NSBezierPath(roundedRect:rect.insetBy(dx:-4,dy:-4),xRadius:6,yRadius:6);selection.lineWidth=drag?.target==p.id ? 3:1.5;selection.stroke()}
-                if parents.contains(p.id),(selected==p.id || n.flag("collapsed")) {let r=CGRect(x:rect.maxX+4,y:portY(p)-8,width:16,height:16);(light ? NSColor.white:NSColor(hex:"#292b30")).setFill();let circle=NSBezierPath(ovalIn:r);circle.fill();color.setStroke();circle.lineWidth=0.8;circle.stroke();(n.flag("collapsed") ? "+":"−" as NSString).draw(at:CGPoint(x:r.minX+3,y:r.minY),withAttributes:[.font:NSFont.systemFont(ofSize:12),.foregroundColor:color])}
+                if selectedIDs.contains(p.id) || drag?.target==p.id {color.setStroke();let selection=NSBezierPath(roundedRect:rect.insetBy(dx:-4,dy:-4),xRadius:6,yRadius:6);selection.lineWidth=drag?.target==p.id ? 3:1.5;selection.stroke()}
+                if parents.contains(p.id),(selectedIDs.contains(p.id) || n.flag("collapsed")) {let r=CGRect(x:rect.maxX+4,y:portY(p)-8,width:16,height:16);(light ? NSColor.white:NSColor(hex:"#292b30")).setFill();let circle=NSBezierPath(ovalIn:r);circle.fill();color.setStroke();circle.lineWidth=0.8;circle.stroke();(n.flag("collapsed") ? "+":"−" as NSString).draw(at:CGPoint(x:r.minX+3,y:r.minY),withAttributes:[.font:NSFont.systemFont(ofSize:12),.foregroundColor:color])}
             }
             NSGraphicsContext.restoreGraphicsState()
         }
@@ -106,6 +122,7 @@ final class MindCanvas:NSView {
         guard let window else{return}
         let elements=placements.map {p -> NodeAX in
             let a=NodeAX();a.setAccessibilityRole(.button);a.setAccessibilityEnabled(true);a.setAccessibilityLabel(nodeMap[p.id]?.title ?? "节点");a.setAccessibilityParent(self)
+            a.setAccessibilityValue(selectedIDs.contains(p.id) ? "已选中":"未选中")
             let r=CGRect(x:offset.x+p.rect.minX*zoom,y:offset.y+p.rect.minY*zoom,width:p.rect.width*zoom,height:p.rect.height*zoom)
             a.setAccessibilityFrame(window.convertToScreen(convert(r,to:nil)));a.activate={[weak self] in guard let self else{return};self.window?.makeFirstResponder(self);self.select(p.id)};return a
         }
@@ -120,35 +137,48 @@ final class MindCanvas:NSView {
     func commitEditor(_ commit:Bool=true){guard let editor,let id=editingID else{return};let value=editor.string;self.editor=nil;editingID=nil;editor.removeFromSuperview();window?.makeFirstResponder(self);if commit,value != nodeMap[id]?.title{controller?.editNode(id,key:"title",value:value)};refreshAX()}
     override func mouseDown(with event:NSEvent){
         commitEditor();window?.makeFirstResponder(self);let point=convert(event.locationInWindow,from:nil),map=mapPoint(point)
-        for p in placements where parents.contains(p.id) && (selected==p.id || nodeMap[p.id]?.flag("collapsed")==true) {
+        if spaceHeld {spaceUsed=true;NSCursor.closedHand.set();drag=Drag(id:nil,start:point,offset:offset,original:placements,ids:[],manual:false,mode:.pan);return}
+        for p in placements where parents.contains(p.id) && (selectedIDs.contains(p.id) || nodeMap[p.id]?.flag("collapsed")==true) {
             if CGRect(x:p.rect.maxX+3,y:portY(p)-9,width:18,height:18).contains(map){select(p.id);controller?.command("fold");return}
         }
         if let p=hit(map){
             if let from=connectFrom {connectFrom=nil;if from != p.id{controller?.addConnection(from:from,to:p.id)};return}
-            select(p.id)
+            if event.modifierFlags.contains(.shift) || event.modifierFlags.contains(.command) {var ids=selectedIDs;if ids.contains(p.id){ids.remove(p.id)}else{ids.insert(p.id)};setSelection(ids,primary:p.id);return}
+            if !selectedIDs.contains(p.id){select(p.id)}
             if event.clickCount==2 {edit(p.id);return}
-            drag=Drag(id:p.id,start:point,offset:offset,original:placements,ids:document.descendants(p.id),manual:event.modifierFlags.contains(.option)||nodeMap[p.id]?.parent==nil)
+            let ids=selectedIDs.reduce(into:Set<String>()){$0.formUnion(document.descendants($1))}
+            drag=Drag(id:p.id,start:point,offset:offset,original:placements,ids:ids,manual:selectedIDs.count>1||event.modifierFlags.contains(.option)||nodeMap[p.id]?.parent==nil,selection:selectedIDs)
         } else {
             if event.clickCount==2,let c=hitConnection(map){controller?.editConnection(c);return}
-            drag=Drag(id:nil,start:point,offset:offset,original:placements,ids:[],manual:false)
+            let previous=selectedIDs,base=event.modifierFlags.contains(.shift)||event.modifierFlags.contains(.command) ? previous:[]
+            drag=Drag(id:nil,start:point,offset:offset,original:placements,ids:[],manual:false,mode:.marquee,selection:previous,baseSelection:base)
+            setSelection(base)
         }
     }
     override func mouseDragged(with event:NSEvent){
         guard var d=drag else{return};let point=convert(event.locationInWindow,from:nil),dx=point.x-d.start.x,dy=point.y-d.start.y
-        if d.id==nil {offset=CGPoint(x:d.offset.x+dx,y:d.offset.y+dy);needsDisplay=true;return}
+        if d.mode == .pan {offset=CGPoint(x:d.offset.x+dx,y:d.offset.y+dy);needsDisplay=true;return}
         if hypot(dx,dy)>5{d.moved=true};guard d.moved else{return}
+        if d.mode == .marquee {
+            marquee=Self.selectionRect(from:d.start,to:point)
+            let area=Self.selectionRect(from:mapPoint(d.start),to:mapPoint(point))
+            setSelection(d.baseSelection.union(placements.filter{$0.rect.intersects(area)}.map(\.id)));drag=d;return
+        }
         placements=d.original.map {p in var next=p;if d.ids.contains(p.id){next.rect.origin.x+=dx/zoom;next.rect.origin.y+=dy/zoom};return next}
         d.target=d.manual ? nil:placements.first{!d.ids.contains($0.id)&&$0.rect.insetBy(dx:-12,dy:-12).contains(mapPoint(point))}?.id
         drag=d;needsDisplay=true
     }
     override func mouseUp(with event:NSEvent){
-        guard let d=drag else{return};drag=nil;defer{refreshAX();controller?.checkPendingExternal()}
+        guard let d=drag else{return};drag=nil;marquee=nil;needsDisplay=true;NSCursor.arrow.set();defer{refreshAX();controller?.checkPendingExternal()}
+        guard d.mode == .nodes else{return}
         guard let id=d.id,d.moved else{return}
         let point=convert(event.locationInWindow,from:nil)
-        if d.manual,let original=d.original.first(where:{$0.id==id}){controller?.translate(id,delta:CGPoint(x:(point.x-d.start.x)/zoom,y:(point.y-d.start.y)/zoom),origin:original.rect.origin)}
+        if d.manual{controller?.translateSelection(d.selection,delta:CGPoint(x:(point.x-d.start.x)/zoom,y:(point.y-d.start.y)/zoom),placements:d.original)}
         else if let target=d.target{controller?.move(id,to:target)}else{placements=d.original;needsDisplay=true}
     }
-    func cancelDrag(){if let d=drag{placements=d.original;offset=d.offset;drag=nil;needsDisplay=true;refreshAX()}}
+    func cancelDrag(){if let d=drag{placements=d.original;offset=d.offset;drag=nil;marquee=nil;if d.mode == .marquee{setSelection(d.selection)};needsDisplay=true;refreshAX()};spaceHeld=false;spaceUsed=false;NSCursor.arrow.set()}
+    override func resignFirstResponder()->Bool{spaceHeld=false;spaceUsed=false;NSCursor.arrow.set();return super.resignFirstResponder()}
+    override func keyUp(with event:NSEvent){if event.keyCode==49{let editOnRelease=spaceHeld && !spaceUsed && drag==nil && selectedIDs.count==1;spaceHeld=false;spaceUsed=false;NSCursor.arrow.set();if editOnRelease{edit(selected)};return};super.keyUp(with:event)}
     override func scrollWheel(with event:NSEvent){guard editor==nil,drag==nil else{return};if event.modifierFlags.contains(.command)||event.modifierFlags.contains(.control){scale(exp(-event.scrollingDeltaY*0.01),at:convert(event.locationInWindow,from:nil))}else{offset.x-=event.scrollingDeltaX;offset.y-=event.scrollingDeltaY;needsDisplay=true;refreshAX()}}
     override func magnify(with event:NSEvent){guard editor==nil,drag==nil else{return};scale(1+event.magnification,at:convert(event.locationInWindow,from:nil))}
     override func keyDown(with event:NSEvent){
@@ -156,9 +186,9 @@ final class MindCanvas:NSView {
         switch event.keyCode {
         case 48:controller?.command("child")
         case 36:controller?.command("sibling")
-        case 49:edit(selected)
+        case 49:if !event.isARepeat{spaceHeld=true;spaceUsed=false;NSCursor.openHand.set()}
         case 51,117:controller?.command("delete")
-        case 53:cancelDrag();connectFrom=nil;if focus != nil{controller?.command("focus")}
+        case 53:let wasDragging=drag != nil;cancelDrag();connectFrom=nil;if !wasDragging,focus != nil{controller?.command("focus")}
         case 123,124,125,126:controller?.navigate(event.keyCode,reorder:event.modifierFlags.contains(.option))
         default:super.keyDown(with:event)
         }
@@ -172,7 +202,7 @@ final class MindCanvas:NSView {
     }
     override func menu(for event:NSEvent)->NSMenu?{
         let p=mapPoint(convert(event.locationInWindow,from:nil)),menu=NSMenu()
-        if let n=hit(p){select(n.id);for (title,cmd) in [("编辑文字","edit"),("添加子节点","child"),("折叠 / 展开","fold"),("标记完成","done"),("插入图片","image"),("复制节点链接","copyLink"),("打开链接","openLink"),("删除分支","delete")]{let item=NSMenuItem(title:title,action:#selector(BranchController.menuCommand(_:)),keyEquivalent:"");item.representedObject=cmd;item.target=controller;menu.addItem(item)}}
+        if let n=hit(p){if !selectedIDs.contains(n.id){select(n.id)};for (title,cmd) in [("编辑文字","edit"),("添加子节点","child"),("折叠 / 展开","fold"),("标记完成","done"),("插入图片","image"),("复制节点链接","copyLink"),("打开链接","openLink"),("删除分支","delete")]{let item=NSMenuItem(title:title,action:#selector(BranchController.menuCommand(_:)),keyEquivalent:"");item.representedObject=cmd;item.target=controller;menu.addItem(item)}}
         else if let index=hitConnection(p){let item=NSMenuItem(title:"删除关系线",action:#selector(BranchController.deleteConnectionMenu(_:)),keyEquivalent:"");item.tag=index;item.target=controller;menu.addItem(item)}
         else {
             let create=NSMenuItem(title:"新建主节点",action:#selector(BranchController.newRootMenu(_:)),keyEquivalent:"")

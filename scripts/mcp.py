@@ -61,7 +61,7 @@ def invoke(name,a):
     raise ValueError('未知工具')
 def handle(r):
     method=r.get('method');params=r.get('params',{})
-    if method=='initialize':return {'protocolVersion':'2025-03-26','capabilities':{'tools':{}},'serverInfo':{'name':'branch-local','version':'0.2.1'}}
+    if method=='initialize':return {'protocolVersion':'2025-03-26','capabilities':{'tools':{}},'serverInfo':{'name':'branch-local','version':'0.2.2'}}
     if method=='ping':return {}
     if method=='tools/list':return {'tools':TOOLS}
     if method=='tools/call':

@@ -8,6 +8,61 @@ let temp=FileManager.default.temporaryDirectory.appendingPathComponent("branch-n
 try FileManager.default.createDirectory(at:temp,withIntermediateDirectories:true)
 defer {try? FileManager.default.removeItem(at:temp)}
 do {
+    // Send AppKit events directly to an isolated view; never inject desktop input.
+    var selectionDoc=MindDocument.create("框选 A")
+    let a=selectionDoc.root.id;selectionDoc.set(a,"position",["x":10,"y":20])
+    let b=selectionDoc.addRoot(title:"框选 B",at:CGPoint(x:300,y:200))
+    let c=selectionDoc.addRoot(title:"框选 C",at:CGPoint(x:600,y:400))
+    let selectionCanvas=MindCanvas(frame:CGRect(x:0,y:0,width:1000,height:800))
+    let selectionWindow=NSWindow(contentRect:selectionCanvas.frame,styleMask:[.titled],backing:.buffered,defer:false)
+    selectionWindow.contentView=selectionCanvas
+    selectionCanvas.reload(selectionDoc,selection:a,focus:nil)
+    selectionCanvas.zoom=0.8;selectionCanvas.offset=CGPoint(x:70,y:40)
+    func pointer(_ type:NSEvent.EventType,_ map:CGPoint,_ flags:NSEvent.ModifierFlags=[])->NSEvent {
+        let view=CGPoint(x:map.x*selectionCanvas.zoom+selectionCanvas.offset.x,y:map.y*selectionCanvas.zoom+selectionCanvas.offset.y)
+        return NSEvent.mouseEvent(with:type,location:selectionCanvas.convert(view,to:nil),modifierFlags:flags,timestamp:0,windowNumber:selectionWindow.windowNumber,context:nil,eventNumber:0,clickCount:1,pressure:1)!
+    }
+    func box(_ start:CGPoint,_ end:CGPoint,_ flags:NSEvent.ModifierFlags=[]) {
+        selectionCanvas.mouseDown(with:pointer(.leftMouseDown,start,flags))
+        selectionCanvas.mouseDragged(with:pointer(.leftMouseDragged,end,flags))
+        selectionCanvas.mouseUp(with:pointer(.leftMouseUp,end,flags))
+    }
+    let offset=selectionCanvas.offset
+    box(.zero,CGPoint(x:500,y:330))
+    try check(selectionCanvas.selectedIDs == [a,b] && selectionCanvas.offset==offset,"blank drag selects nodes without panning at non-unit zoom")
+    box(CGPoint(x:500,y:330),.zero)
+    try check(selectionCanvas.selectedIDs == [a,b],"reverse rectangle selection")
+    box(CGPoint(x:550,y:350),CGPoint(x:900,y:600),.shift)
+    try check(selectionCanvas.selectedIDs == [a,b,c],"shift rectangle adds to selection")
+    selectionCanvas.mouseDown(with:pointer(.leftMouseDown,.zero))
+    selectionCanvas.mouseDragged(with:pointer(.leftMouseDragged,CGPoint(x:200,y:100)))
+    selectionCanvas.cancelDrag()
+    try check(selectionCanvas.selectedIDs == [a,b,c] && selectionCanvas.marquee==nil,"escape restores selection and removes rectangle")
+    box(CGPoint(x:950,y:700),CGPoint(x:980,y:730))
+    try check(selectionCanvas.selectedIDs.isEmpty,"empty rectangle clears selection")
+    selectionCanvas.select(a)
+    let key=NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:[],timestamp:0,windowNumber:selectionWindow.windowNumber,context:nil,characters:" ",charactersIgnoringModifiers:" ",isARepeat:false,keyCode:49)!
+    selectionCanvas.keyDown(with:key)
+    selectionCanvas.mouseDown(with:pointer(.leftMouseDown,CGPoint(x:950,y:700)))
+    selectionCanvas.mouseDragged(with:pointer(.leftMouseDragged,CGPoint(x:1000,y:750)))
+    selectionCanvas.mouseUp(with:pointer(.leftMouseUp,CGPoint(x:950,y:700)))
+    selectionCanvas.keyUp(with:key)
+    try check(selectionCanvas.offset==CGPoint(x:offset.x+40,y:offset.y+40) && selectionCanvas.selectedIDs == [a] && selectionCanvas.editor==nil,"space drag pans without editing or changing selection")
+    selectionCanvas.keyDown(with:key);selectionCanvas.keyUp(with:key)
+    try check(selectionCanvas.editor != nil,"space tap still edits a single node")
+    selectionCanvas.commitEditor(false)
+    selectionWindow.contentView=nil
+    var group=MindDocument.create("Parent",sample:true)
+    let branch=group.children(group.root.id)[0].id,leaf=group.children(branch)[0].id,other=group.children(group.root.id)[1].id
+    let selected:Set<String>=[branch,leaf,other],before=MindLayout.calculate(group),delta=CGPoint(x:110,y:-60)
+    group.translateSelection(selected,by:delta,placements:before)
+    let affected=group.descendants(branch).union(group.descendants(other)),after=Dictionary(uniqueKeysWithValues:MindLayout.calculate(group).map{($0.id,$0)})
+    for p in before {let shift=affected.contains(p.id) ? delta:.zero;try check(near(after[p.id]!.rect.minX,p.rect.minX+shift.x)&&near(after[p.id]!.rect.minY,p.rect.minY+shift.y),"selected parent and child move exactly once")}
+    try group.removeSelection(selected)
+    try check(affected.allSatisfy{group.node($0)==nil} && group.roots.count==1,"multi-selection deletion removes subtrees")
+    let remaining=group.nodes.count
+    do{try group.removeSelection(Set(group.nodes.map(\.id)));throw BranchError("deleted all roots")}catch let e as BranchError{try check(e.message != "deleted all roots" && group.nodes.count==remaining,"delete all protects last root without partial removal")}
+    print("PASS: native marquee events, reverse and additive selection, cancel, empty selection, space pan/edit, grouped movement and deletion")
     for direction in ["horizontal","compact","vertical"] {
         var d=MindDocument.create("中文主节点",sample:true);d.raw["layout"]=direction
         let root=d.root.id,branch=d.children(root)[0].id,leaf=d.children(branch)[0].id

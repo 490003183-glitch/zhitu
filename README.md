@@ -6,10 +6,10 @@
 
 ## 安装
 
-下载 `Zhitu-0.2.1-macOS-arm64.dmg`，打开后把 **枝图.app** 拖到 **Applications**，再从“应用程序”打开。也提供 ZIP 包，解压后同样拖入“应用程序”。桌面应用无需安装开发工具或 Python。
+下载 `Zhitu-0.2.2-macOS-arm64.dmg`，打开后把 **枝图.app** 拖到 **Applications**，再从“应用程序”打开。也提供 ZIP 包，解压后同样拖入“应用程序”。桌面应用无需安装开发工具或 Python。
 
 - 安装包适用于 Apple Silicon（M 系列），部署目标 macOS 14.0 或以上；当前实机验证为 macOS 26.4.1，其他系统版本尚未验证。没有发布 Intel 安装包。
-- 当前为 **0.2.1 开发版**，并非全部开发目标的最终验收版本。
+- 当前为 **0.2.2 开发版**，并非全部开发目标的最终验收版本。
 - 应用使用 ad-hoc 签名，**未做 Apple Developer ID 签名和公证**。首次打开若被拦截，在确认下载来源后，到“系统设置 → 隐私与安全性 → 仍要打开”。参见 [Apple 官方说明](https://support.apple.com/102445)。
 - 发布页提供 `SHA256SUMS.txt`；将它和下载包放在同一目录，可用 `shasum -a 256 -c SHA256SUMS.txt --ignore-missing` 核对已下载文件。
 - 更新前退出应用，再替换应用文件。本机工程独立存储，更新和移除应用不会自动删除工程。
@@ -25,7 +25,7 @@ cd zhitu
 open build/枝图.app
 ```
 
-0.2.1 使用 Swift、AppKit、Core Graphics、ImageIO 和 Foundation。桌面端没有 WebView、HTML、JavaScript 或 Python 子进程。安装编译器后，构建无需下载第三方依赖；当前使用 Swift 6.3.3 编译。构建脚本针对当前 Mac 的架构，以 macOS 14.0 为部署目标。
+0.2.2 使用 Swift、AppKit、Core Graphics、ImageIO 和 Foundation。桌面端没有 WebView、HTML、JavaScript 或 Python 子进程。安装编译器后，构建无需下载第三方依赖；当前使用 Swift 6.3.3 编译。构建脚本针对当前 Mac 的架构，以 macOS 14.0 为部署目标。
 
 运行 `./scripts/package.sh` 重新构建并生成 `dist/` 下的 DMG、ZIP 和 SHA-256 校验文件；安装包包括许可证和安装说明。
 
@@ -56,6 +56,9 @@ open build/枝图.app
 ## 操作
 
 - 画布空白处右键 → 新建主节点；也可使用「节点 → 新建主节点」。至少保留一个主节点，其他主节点可连同子树删除或撤销。
+- 空白处左键拖动：框选节点；Shift / ⌘ 加框选：追加选择；Shift / ⌘ 点击节点：切换该节点的选中状态。点击空白处清除选择，Esc 取消正在进行的框选。
+- 拖动选中的节点：一起移动所选子树；Delete 删除所选子树，⌘Z 撤销。父节点和后代同时选中时仅移动一次，至少保留一个主节点。
+- 按住空格拖动：平移画布；轻按空格：编辑单个选中节点。
 - Tab：子节点；Enter：同级节点；双击或空格：编辑。标题编辑时 Shift+Enter 换行，Esc 取消。
 - 拖主节点：整棵树移动；拖分支到另一节点：改父级；⌥拖动：自由摆放；⌥↑ / ⌥↓：同级排序。
 - ⌘Z / ⇧⌘Z：撤销 / 重做；⌘S：保存；⌘W：关闭；⌘N：新建；⌘O：导入；⌘F：搜索。

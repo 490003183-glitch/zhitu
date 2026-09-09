@@ -77,8 +77,8 @@ final class BranchController:NSObject,NSWindowDelegate,NSOutlineViewDataSource,N
         canvas.reload(document,selection:selected,focus:focusID);rightButtons.first?.isEnabled = !history.isEmpty;if rightButtons.count>1{rightButtons[1].isEnabled = !future.isEmpty}
         refreshOutline();if showInspector{buildInspector()};if showLibrary{buildLibrary()};updateFooter()
     }
-    func updateFooter(){zoomButton?.title="\(Int((canvas.zoom*100).rounded()))%";stats.stringValue="\(document.nodes.count) 个节点 · \(document.nodes.filter{!$0.text("image").isEmpty}.count) 张图片"+(focusID == nil ? "":" · 聚焦视图")}
-    func select(_ id:String){guard document.node(id) != nil else{return};selected=id;canvas.selected=id;canvas.needsDisplay=true;if showInspector{buildInspector()};if showOutline,let item=outlineNodes[id]{let row=outline.row(forItem:item);if row>=0{outline.selectRowIndexes(IndexSet(integer:row),byExtendingSelection:false)}}}
+    func updateFooter(){zoomButton?.title="\(Int((canvas.zoom*100).rounded()))%";stats.stringValue="\(document.nodes.count) 个节点 · \(document.nodes.filter{!$0.text("image").isEmpty}.count) 张图片"+(canvas.selectedIDs.count>1 ? " · 已选 \(canvas.selectedIDs.count) 个":"")+(focusID == nil ? "":" · 聚焦视图")}
+    func select(_ id:String){guard document.node(id) != nil else{return};selected=id;canvas.selected=id;canvas.selectedIDs=[id];canvas.needsDisplay=true;updateFooter();if showInspector{buildInspector()};if showOutline,let item=outlineNodes[id]{let row=outline.row(forItem:item);if row>=0{outline.selectRowIndexes(IndexSet(integer:row),byExtendingSelection:false)}}}
     func commitEditing(){guard !committing else{return};committing=true;canvas.commitEditor();window?.makeFirstResponder(showOutline ? outline:canvas);committing=false}
     func mutate(_ edit:(inout MindDocument)throws->Void){
         let old=document
@@ -87,6 +87,7 @@ final class BranchController:NSObject,NSWindowDelegate,NSOutlineViewDataSource,N
     }
     func editNode(_ id:String,key:String,value:Any?){guard let n=document.node(id) else{return};if let s=value as? String,n.text(key)==s{return};mutate{$0.set(id,key,value)}}
     func translate(_ id:String,delta:CGPoint,origin:CGPoint){mutate{$0.translate(id,by:delta,origin:origin)}}
+    func translateSelection(_ ids:Set<String>,delta:CGPoint,placements:[NodePlacement]){mutate{$0.translateSelection(ids,by:delta,placements:placements)}}
     func move(_ id:String,to parent:String){mutate{try $0.move(id,to:parent);$0.set(parent,"collapsed",false)}}
     func undo(_ redo:Bool=false){
         if let text=window.firstResponder as? NSTextView,text !== canvas.editor,let undo=text.undoManager,(redo ? undo.canRedo:undo.canUndo){if redo{undo.redo()}else{undo.undo()};return}
@@ -107,6 +108,7 @@ final class BranchController:NSObject,NSWindowDelegate,NSOutlineViewDataSource,N
     func afterSaved(_ action:@escaping()->Void){commitEditing();save{ok in if ok{action()}}}
     func windowShouldClose(_ sender:NSWindow)->Bool{if allowClose{return true};afterSaved{[weak self] in guard let self else{return};self.allowClose=true;self.window.close()};return false}
     func windowWillUseStandardFrame(_ window:NSWindow,defaultFrame newFrame:NSRect)->NSRect{window.screen?.visibleFrame ?? newFrame}
+    func windowDidResignKey(_ notification:Notification){canvas.cancelDrag()}
     func terminate()->NSApplication.TerminateReply{if allowClose{return .terminateNow};commitEditing();if !dirty && !saving{return .terminateNow};DispatchQueue.main.async{self.save{ok in NSApp.reply(toApplicationShouldTerminate:ok)}};return .terminateLater}
     func scheduleExternalCheck(){watchWork?.cancel();pendingExternal=true;let w=DispatchWorkItem{[weak self] in self?.checkPendingExternal()};watchWork=w;DispatchQueue.main.asyncAfter(deadline:.now()+0.4,execute:w)}
     func checkPendingExternal(){
@@ -119,10 +121,11 @@ final class BranchController:NSObject,NSWindowDelegate,NSOutlineViewDataSource,N
     func command(_ cmd:String){
         if cmd=="undo"{undo();return};if cmd=="redo"{undo(true);return}
         commitEditing()
+        if !showOutline,canvas.selectedIDs.isEmpty,["child","sibling","delete","edit","fold","task","done","connect","notes","tags","image","copyLink","openLink"].contains(cmd){return}
         switch cmd {
         case "newRoot":createRoot(at:canvas.mapPoint(CGPoint(x:canvas.bounds.midX,y:canvas.bounds.midY)))
         case "child","sibling":let n=document.node(selected) ?? document.root;var id="";mutate{d in let parent=cmd=="sibling" ? n.parent ?? n.id:n.id;id=d.add(parent);if cmd=="sibling",n.parent != nil{let i=d.children(parent).firstIndex{$0.id==n.id} ?? 0;try d.move(id,to:parent,index:i+1)}};selected=id;refresh();if showOutline{beginOutlineEdit(id)}else{canvas.edit(id)}
-        case "delete":let parent=document.node(selected)?.parent;mutate{try $0.remove(selected)};if let parent{select(parent)}
+        case "delete":let ids=canvas.selectedIDs,parent=document.node(selected)?.parent;mutate{try $0.removeSelection(ids)};if let parent,document.node(parent) != nil{select(parent)}
         case "edit":if showOutline{beginOutlineEdit(selected)}else{canvas.edit(selected)}
         case "fold":editNode(selected,key:"collapsed",value:!(document.node(selected)?.flag("collapsed") ?? false))
         case "task":editNode(selected,key:"task",value:!(document.node(selected)?.flag("task") ?? false))
@@ -136,7 +139,7 @@ final class BranchController:NSObject,NSWindowDelegate,NSOutlineViewDataSource,N
         case "library":showLibrary.toggle();buildLibrary();layoutViews()
         case "inspector":showInspector.toggle();buildInspector();layoutViews()
         case "notes","tags":inspectorTab=cmd=="notes" ? 1:2;showInspector=true;buildInspector();layoutViews()
-        case "outline":showOutline.toggle();refreshOutline();buildLibrary();layoutViews();window.makeFirstResponder(showOutline ? outline:canvas)
+        case "outline":showOutline.toggle();if showOutline{select(selected)};refreshOutline();buildLibrary();layoutViews();window.makeFirstResponder(showOutline ? outline:canvas)
         case "search":showSearch.toggle();layoutViews();if showSearch{window.makeFirstResponder(searchField)}else{searchField.stringValue="";canvas.search="";canvas.needsDisplay=true}
         case "new":afterSaved{[weak self] in guard let self else{return};self.load(MindDocument.create());self.dirty=true;self.save();self.canvas.edit(self.selected)}
         case "open":let panel=NSOpenPanel();panel.canChooseDirectories=false;panel.allowsMultipleSelection=false;panel.beginSheetModal(for:window){[weak self] response in if response == .OK,let url=panel.url{self?.open(url)}}
@@ -145,10 +148,10 @@ final class BranchController:NSObject,NSWindowDelegate,NSOutlineViewDataSource,N
         case "image":let panel=NSOpenPanel();panel.allowedContentTypes=[.jpeg,.png];panel.allowsMultipleSelection=false;panel.beginSheetModal(for:window){[weak self] response in if response == .OK{self?.insertImages(panel.urls)}}
         case "copyLink":NSPasteboard.general.clearContents();NSPasteboard.general.setString("branch://\(document.id)/\(selected)",forType:.string);saveLabel.stringValue="节点链接已复制"
         case "openLink":if let s=document.node(selected)?.text("link"),let url=URL(string:s){if url.scheme=="branch"{open(url)}else if ["https","http"].contains(url.scheme ?? ""){NSWorkspace.shared.open(url)}}
-        case "help":message("快捷键","Tab：子节点 · Enter：同级节点 · 双击 / 空格：编辑\n标题编辑时 Shift+Enter 换行，Esc 取消。\n拖动主节点：整图移动。拖动分支到另一节点：改父级。⌥拖动：自由摆放。\n⌥↑ / ⌥↓：同级排序 · ⌘Z / ⇧⌘Z：撤销 / 重做\n⌘S：保存 · ⌘W：关闭 · 滚轮平移 · 捏合或 ⌘滚轮缩放。\n双击关系线编辑标题，右键删除关系线。")
+        case "help":message("快捷键","Tab：子节点 · Enter：同级节点 · 双击 / 轻按空格：编辑\n标题编辑时 Shift+Enter 换行，Esc 取消。\n空白处拖动：框选。Shift / ⌘：增选；点击节点可切换选中。\n空格按住拖动：平移画布。滚轮也可平移。\n拖动已选节点：移动所选子树。拖动单个分支到另一节点：改父级。⌥拖动：自由摆放。\n⌥↑ / ⌥↓：同级排序 · ⌘Z / ⇧⌘Z：撤销 / 重做\n⌘S：保存 · ⌘W：关闭 · 捏合或 ⌘滚轮缩放。\n双击关系线编辑标题，右键删除关系线。")
         case "mcp":let path=Bundle.main.resourceURL!.appendingPathComponent("scripts/mcp.py").path;let raw:[String:Any]=["mcpServers":["branch":["command":"/usr/bin/python3","args":[path]]]];let data=try? JSONSerialization.data(withJSONObject:raw,options:[.prettyPrinted,.sortedKeys]);let a=NSAlert();a.messageText="本地 MCP";a.informativeText="默认只读。args 加 --write 开启修改。\n工程目录：\(store.root.path)\n\n"+(data.flatMap{String(data:$0,encoding:.utf8)} ?? "");a.addButton(withTitle:"复制配置");a.addButton(withTitle:"关闭");if a.runModal() == .alertFirstButtonReturn,let data{NSPasteboard.general.clearContents();NSPasteboard.general.setString(String(data:data,encoding:.utf8)!,forType:.string)}
         case "recovery":let a=NSAlert();a.messageText="保存与恢复";a.informativeText="先导出当前工程副本，保留尚未保存的编辑。重新载入会放弃本次未保存修改。";a.addButton(withTitle:"导出副本");a.addButton(withTitle:"取消");a.addButton(withTitle:"重新载入");let result=a.runModal();if result == .alertFirstButtonReturn{export("branch")}else if result == .alertThirdButtonReturn{saveWork?.cancel();do{load(try store.read(document.id))}catch{alert(error)}}
-        case "about":NSApp.orderFrontStandardAboutPanel(options:[.applicationName:"枝图",.applicationVersion:"0.2.1 · 原生 macOS",.credits:NSAttributedString(string:"自己的想法，留在自己的电脑。")])
+        case "about":NSApp.orderFrontStandardAboutPanel(options:[.applicationName:"枝图",.applicationVersion:"0.2.2 · 原生 macOS",.credits:NSAttributedString(string:"自己的想法，留在自己的电脑。")])
         default:break
         }
     }

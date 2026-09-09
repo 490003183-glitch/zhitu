@@ -16,7 +16,10 @@ extension BranchController {
         row(ActionButton("本地连接 / MCP"){[weak self] in self?.command("mcp")},in:stack)
     }
     func buildInspector(){
-        guard showInspector,let n=document.node(selected) else{return};let id=n.id,stack=stack(in:inspectorScroll,width:280)
+        guard showInspector else{return}
+        guard !canvas.selectedIDs.isEmpty,let n=document.node(selected) else{let panel=stack(in:inspectorScroll,width:280);row(label("请选择一个节点",size:13),in:panel);return}
+        let id=n.id,stack=stack(in:inspectorScroll,width:280)
+        if canvas.selectedIDs.count>1{row(label("已选 \(canvas.selectedIDs.count) 项；以下属性仅编辑当前节点",size:11),in:stack,height:36)}
         let tabs=NSStackView();tabs.orientation = .horizontal;tabs.distribution = .fillEqually
         for (i,title) in ["样式","备注","标签","画布"].enumerated(){let b=ActionButton(title){[weak self] in self?.commitEditing();self?.inspectorTab=i;self?.buildInspector()};if i==inspectorTab{b.contentTintColor = .controlAccentColor};tabs.addArrangedSubview(b)}
         row(tabs,in:stack,height:30)

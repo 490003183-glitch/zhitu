@@ -82,6 +82,24 @@ struct MindDocument {
             if let p {nodes[i].raw["position"]=["x":p.x+delta.x,"y":p.y+delta.y]}
         }
     }
+    func selectionRoots(_ ids:Set<String>) -> [String] {
+        let by=Dictionary(uniqueKeysWithValues:nodes.map{($0.id,$0)})
+        return nodes.filter {n in
+            guard ids.contains(n.id) else{return false}
+            var parent=n.parent
+            while let id=parent {if ids.contains(id){return false};parent=by[id]?.parent}
+            return true
+        }.map(\.id)
+    }
+    mutating func translateSelection(_ ids:Set<String>,by delta:CGPoint,placements:[NodePlacement]) {
+        let positions=Dictionary(uniqueKeysWithValues:placements.map{($0.id,$0.rect.origin)})
+        for id in selectionRoots(ids) {if let origin=positions[id]{translate(id,by:delta,origin:origin)}}
+    }
+    mutating func removeSelection(_ ids:Set<String>) throws {
+        let tops=selectionRoots(ids)
+        guard !roots.allSatisfy({tops.contains($0.id)}) else{throw BranchError("至少保留一个主节点")}
+        for id in tops {try remove(id)}
+    }
     static func create(_ title:String="未命名导图",sample:Bool=false) -> MindDocument {
         let id=UUID().uuidString,root=UUID().uuidString
         var d=MindDocument(raw:["version":1,"id":id,"revision":0,"title":title,"theme":"dark","layout":"horizontal","nodes":[["id":root,"parent":NSNull(),"title":title,"order":0,"color":"#f49b51"]],"connections":[]])
